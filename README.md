@@ -18,11 +18,11 @@ USBPcap driver and its matching source archive.
 > The original application and setup executable are unsigned; the bundled
 > USBPcap installer has an upstream Authenticode signature.
 
-![Settings with raised key labels, shortcut controls, and live keyboard status](docs/images/settings.png)
+![Main window with raised key labels and compact remapping status](docs/images/settings.png)
 
 ## Install and use
 
-1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.3.0-x64.exe`.
+1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.4.0-x64.exe`.
 2. Review the setup summary and choose **Install**. Administrator access is needed.
 3. Restart Windows if setup installed USBPcap for the first time. Setup never
    restarts your computer automatically.
@@ -57,23 +57,33 @@ not claimed as tested. Connect only one keyboard matching the selected profile.
 | Help | F1 | Help |
 
 These are global shortcuts; their effects depend on the focused application.
-Choose or type a different shortcut in settings and click **Save shortcuts**.
+Choose or type a different shortcut in the main window and click **Save shortcuts**.
 For example, use `Ctrl+Shift+Z` for redo in an application that expects it.
 `Disabled` leaves an extra key without an assigned action.
 The save indicator shows pending edits; **Save shortcuts** becomes available when
-you change a shortcut. The status and activity panels show capture mode and counts.
+you change a shortcut. The compact status line shows the current capture mode.
 Longer profiles and shorter displays can scroll to keep every control reachable.
 
-**Key monitor** shows mapped extra-key presses without sending shortcuts.
-**Pause remapping** stops capture temporarily. Closing settings leaves the app in
-the tray; right-click the tray icon and choose **Exit** to stop it completely.
-Pause and monitor mode reset when you launch the app again.
+**Settings** opens a separate window for startup, profile selection, defaults,
+and help. **Key monitor** opens from Settings or the tray menu; it shows counts
+and the last extra key. Opening it leaves remapping active. Select **Test keys
+without sending shortcuts** to disable actions while testing. Closing Key Monitor
+ends test mode.
+
+**Pause remapping** stops capture temporarily. Closing the main window closes its
+utility windows, ends test mode, and leaves the app in the tray. Right-click the
+tray icon and choose **Exit** to stop it completely. A new launch resumes normal
+remapping.
+
+![Separate Settings window](docs/images/preferences.png)
+
+![Optional Key Monitor window](docs/images/key-monitor.png)
 
 ## Automatic startup
 
 Setup registers a Task Scheduler logon task for the installing account, running
 with highest available privileges. Toggle **Start when I sign in**
-in settings to remove or recreate it. Interactive remapping starts after sign-in;
+under **Settings** to remove or recreate it. Interactive remapping starts after sign-in;
 it does not run on the lock/login screen or require a new custom driver.
 
 If UAC is answered with a different account's credentials, profiles and startup
@@ -83,7 +93,7 @@ privileged capture service is not implemented.
 ## Profiles and extending support
 
 Settings and profiles are stored in `%LOCALAPPDATA%\SunKeyboardTools`. Use the
-**Profile folder** button to find them. Bundled defaults are copied only when
+**Settings > Profile folder** button to find them. Bundled defaults are copied only when
 missing, so upgrades keep existing mappings. Restart after adding a profile.
 
 See [the profile format](docs/PROFILES.md) for USB IDs, endpoint/report layout,

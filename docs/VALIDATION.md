@@ -57,6 +57,20 @@ guarantee. The upstream Windows 11 USBPcap crash report remains unresolved.
   high-contrast, screen-reader, and multiple-DPI display testing remain pending.
 - The capture and shortcut-injection backend is unchanged from 0.2.0.
 
+## Focused windows in 0.4.0
+
+- The narrower main window, separate Settings, and Key Monitor were visually
+  inspected with the physical Type 7 connected.
+- Native-window checks passed for Settings ownership, Escape and reopen,
+  editable shortcuts, save feedback, pause/resume, and profile switching.
+- Cancelling the Settings-owned profile-change prompt preserved unsaved edits.
+- Opening Key Monitor kept actions enabled. Closing it with Escape ended test
+  mode; closing the main window hid both utility windows and ended test mode.
+- A 32-key profile was checked in a deliberately shortened window; scrolling,
+  returning to Type 7, and tab order passed. Saved profile bytes and selection
+  were restored after the checks.
+- Live high-contrast, screen-reader, and multiple-DPI display tests remain pending.
+
 The original application code has no selected license. Third-party license
 terms remain in force; see [COPYRIGHT.txt](../COPYRIGHT.txt) and
 [third-party notices](../third-party/NOTICE.txt).

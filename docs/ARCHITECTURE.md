@@ -33,6 +33,12 @@ custom drawing adds panel depth and keycap styling. The high-contrast path uses
 system colors and standard button rendering. The content scrolls vertically when
 its DPI-scaled height exceeds the available work area, and keyboard focus is
 scrolled into view. Profile changes rebuild the mapping controls and tab order.
+The main window owns two modeless utility windows: Settings for preferences and
+profile selection, and Key Monitor for activity and explicit test mode. The
+message loop routes dialog navigation to the window receiving input. Opening a
+monitor is observational; only its test-mode checkbox disables shortcut actions.
+Closing the monitor or hiding the main window clears that temporary test mode.
+Profile changes from Settings retain the unsaved-edit confirmation boundary.
 
 `src/windows.cpp` registers a per-user Task Scheduler logon task with an
 interactive token and highest available privilege. No password is stored. It
