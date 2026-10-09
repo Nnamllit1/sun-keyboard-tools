@@ -1,6 +1,9 @@
 param([string]$CMake = 'cmake', [string]$BuildDirectory = 'build')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$version = (Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'VERSION must be major.minor.patch' }
+if (![IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory = Join-Path $root $BuildDirectory }
 $deps = Join-Path $root '.local\dependencies'
 New-Item -ItemType Directory -Force -Path $deps | Out-Null
 $assets = @{
@@ -25,8 +28,11 @@ $ctest = Join-Path (Split-Path (Get-Command $CMake).Source) 'ctest.exe'
 if ($LASTEXITCODE) { throw 'Tests failed' }
 $out = Join-Path $root 'out'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-$setup = Join-Path $out 'SunKeyboardTools-Setup-0.1.0-x64.exe'
+$setup = Join-Path $out "SunKeyboardTools-Setup-$version-x64.exe"
 Copy-Item -LiteralPath (Join-Path $BuildDirectory 'Release\SunKeyboardTools-Setup.exe') -Destination $setup -Force
 $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
-[IO.File]::WriteAllText((Join-Path $out 'SHA256SUMS.txt'), "$hash  SunKeyboardTools-Setup-0.1.0-x64.exe`n", [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $out 'SHA256SUMS.txt'), "$hash  SunKeyboardTools-Setup-$version-x64.exe`n", [Text.Encoding]::ASCII)
+$notes = Join-Path $root "docs\releases\$version.md"
+if (!(Test-Path -LiteralPath $notes)) { throw "Missing release notes for $version" }
+Copy-Item -LiteralPath $notes -Destination (Join-Path $out 'RELEASE_NOTES.md') -Force
 Write-Output $setup

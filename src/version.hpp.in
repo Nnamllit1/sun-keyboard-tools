@@ -1,0 +1,5 @@
+#pragma once
+namespace sun {
+inline constexpr char version[] = "@PROJECT_VERSION@";
+inline constexpr wchar_t wideVersion[] = L"@PROJECT_VERSION@";
+}

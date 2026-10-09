@@ -1,13 +1,36 @@
 name: Windows build
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -A x64
-      - name: Build
-        run: cmake --build build --config Release
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, test, and package the offline installer
+        shell: pwsh
+        run: ./tools/package.ps1
+      - name: Verify installer payload without installing a driver
+        shell: pwsh
+        run: ./tests/package-smoke.ps1
+      - name: Upload Windows installer and checksum
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            out/SunKeyboardTools-Setup-*-x64.exe
+            out/SHA256SUMS.txt
+            out/RELEASE_NOTES.md

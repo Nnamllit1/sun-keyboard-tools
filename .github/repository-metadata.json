@@ -1,6 +1,6 @@
 {
   "name": "sun-keyboard-tools",
-  "description": "Bring Sun Type 7 keyboard keys back to life on Windows: a C++ tray remapper with editable profiles, automatic startup, and bundled USBPcap setup.",
+  "description": "Sun Type 7 keyboard remapper for Windows. C++ tray app with editable shortcuts, automatic startup, a graphical installer/uninstaller, and USBPcap driver setup.",
   "topics": ["sun-keyboard", "sun-type-7", "sun-microsystems", "keyboard-remapping", "keyboard", "windows", "cpp", "usb", "hid", "usbpcap", "retrocomputing", "system-tray"],
   "license_status": "Not yet selected for original code; bundled USBPcap retains its upstream licenses."
 }

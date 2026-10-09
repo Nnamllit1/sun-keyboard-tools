@@ -1,0 +1,47 @@
+name: Build and release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/build.yml
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x64
+          path: out
+      - name: Verify version and publish the tested installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_TAG" == "v$version" ]] || { echo 'Tag does not match VERSION'; exit 1; }
+          (cd out && sha256sum --check SHA256SUMS.txt)
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft-state.txt 2>/dev/null; then
+            [[ "$(cat draft-state.txt)" == true ]] || { echo 'Release is already public; do not replace published assets.'; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Sun Keyboard Tools $version" --notes-file out/RELEASE_NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" "out/SunKeyboardTools-Setup-$version-x64.exe" out/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

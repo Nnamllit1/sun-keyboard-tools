@@ -39,9 +39,22 @@ USBPcap installer together with its exact corresponding source archive. CMake
 pins SHA-256 hashes. Packaging verifies Authenticode, and setup verifies the
 extracted driver installer's signature before invoking its `/S` option. Existing
 USBPcap installations are reused, never silently downgraded or uninstalled.
-Setup writes to Program Files and rejects reparse paths. Uninstall removes only
-known app files and the invoking user's task; shared USBPcap and user profiles
-are retained. Setup never reboots or changes Windows driver security settings.
+Setup writes to Program Files and rejects reparse paths. Its maintenance screen
+supports app repair, driver setup, and removal. Repair preserves saved profiles
+and the invoking user's startup preference. Uninstall removes known app files
+and that user's task; saved profiles remain. Shared USBPcap is kept unless the
+user explicitly selects its removal. Driver removal uses the signed upstream
+uninstaller and waits for it to finish.
+
+Driver reinstall spans a reboot boundary. Setup removes USBPcap and registers
+a per-user RunOnce entry that reopens the graphical driver screen at sign-in.
+The user selects Install driver, then restarts again to activate it. Pending
+driver removal, loaded capture devices, and incomplete installer registration
+prevent a conflicting install. Setup never reboots or changes driver security.
+
+A running app uninstaller moves to a unique protected cleanup path before its
+files are removed. Only that unique path is scheduled for later cleanup; an
+immediate app reinstall cannot be deleted by the previous uninstall's cleanup.
 
 The original application and setup executable are currently unsigned. USBPcap's
 own installer and supplied driver carry upstream signatures. A driver signature

@@ -1,5 +1,8 @@
 # Sun Keyboard Tools
 
+[![Windows build](https://github.com/Nnamllit1/sun-keyboard-tools/actions/workflows/build.yml/badge.svg)](https://github.com/Nnamllit1/sun-keyboard-tools/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Nnamllit1/sun-keyboard-tools)](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest)
+
 **Bring the extra keys on your Sun Type 7 keyboard back to life on Windows.**
 
 A small C++20 tray application turns Copy, Paste, Undo, Cut, Find, and the other
@@ -17,7 +20,7 @@ USBPcap driver and its matching source archive.
 
 ## Install and use
 
-1. Run `SunKeyboardTools-Setup-0.1.0-x64.exe` from the built `out` folder.
+1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.2.0-x64.exe`.
 2. Review the setup summary and choose **Install**. Administrator access is needed.
 3. Restart Windows if setup installed USBPcap for the first time. Setup never
    restarts your computer automatically.
@@ -25,6 +28,11 @@ USBPcap driver and its matching source archive.
    It starts automatically at subsequent sign-ins.
 5. Release held keys once, or tap and release an ordinary key, then try Copy and
    Paste in a text editor.
+
+Installation, repair, driver maintenance, and uninstall use graphical windows.
+You do not need CMD or PowerShell to use the app.
+
+![Graphical setup with app repair, driver options, and uninstall](docs/images/setup.png)
 
 The app targets Windows 10/11 x64 and an administrator account. USBPcap must be
 accepted by the current Windows security policy; do not disable security features
@@ -110,7 +118,25 @@ The installed **Help** button opens an offline guide. Developers can run
 non-injecting report/count check. Exit the tray app first. No ordinary keys or
 raw USB payloads are logged.
 
-## Build
+## Repair, update, or reinstall the driver
+
+Open **Sun Keyboard Tools Setup** from Start, or run the downloaded installer.
+
+- **Update or repair app** restores application files and shortcuts while keeping
+  your saved profiles, existing driver, and automatic-startup preference.
+- **Driver options** shows whether USBPcap is active, absent, incomplete, or
+  waiting for a restart. **Reinstall driver** removes USBPcap using its signed
+  uninstaller. Restart when ready; setup reopens after sign-in to offer
+  **Install driver**. A second restart activates the new driver.
+- **Uninstall** keeps saved profiles. An unchecked-by-default option also removes
+  USBPcap; this affects Wireshark and any other program using that shared driver.
+
+Setup closes the remapper before changing its files. Unsaved shortcut edits must
+be resolved first. Progress and completion are shown in windows, and setup never
+restarts Windows automatically. A custom/broken USBPcap installation can be
+managed using the **Open Windows Installed apps** button.
+
+## Build (developers)
 
 Requires Visual Studio 2022 with Desktop development with C++, a Windows SDK,
 and CMake 3.24 or newer. No third-party runtime libraries are required.
@@ -145,9 +171,20 @@ name/version; use that path in place of `Setup.exe`.
 
 Use Windows **Settings → Apps → Installed apps → Sun Keyboard Tools**. Uninstall
 removes the app and the invoking account's startup task. Other users should turn
-off their own startup tasks first. Saved profiles remain. A running uninstaller
-is cleaned up at the next restart. USBPcap is shared with tools such as Wireshark;
-remove it separately from Installed apps if no longer needed, then restart.
+off their own startup tasks first. Saved profiles remain. Select **Also remove
+USBPcap** only if no other program needs the shared driver, then restart when
+ready. Reinstalling the app immediately is supported: cleanup of the old
+uninstaller never targets the new installation.
+
+## Builds and releases
+
+Every push to `main` and pull request builds, tests, and packages the Windows
+installer in [GitHub Actions](https://github.com/Nnamllit1/sun-keyboard-tools/actions).
+Each successful run offers a downloadable `windows-x64` artifact. Version tags
+such as `v0.2.0` publish the verified installer and SHA-256 checksum to
+[Releases](https://github.com/Nnamllit1/sun-keyboard-tools/releases).
+
+See [the maintainer release guide](docs/RELEASING.md) for versioning and retries.
 
 ## Project metadata and licensing
 

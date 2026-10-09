@@ -1,0 +1,24 @@
+name: Report a problem
+description: Installation, remapping, startup, or driver behavior
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Sun Keyboard Tools version
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows version and keyboard model
+      placeholder: Windows 11 build ..., Sun Type 7, USB IDs if known
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include steps to reproduce, expected behavior, and the status shown in settings or Setup. Do not attach raw USB captures containing private typing.
+    validations:
+      required: true
