@@ -1,0 +1,10 @@
+Sun Keyboard Tools
+Copyright (c) 2026 Sun Keyboard Tools contributors.
+
+A license for this project's original code has not yet been selected.
+No license grant is provided for that code at this time.
+
+Third-party software retains its own licenses. In particular, the bundled
+USBPcap release is distributed under its upstream GPL-2.0 and BSD-2-Clause
+terms. See third-party/NOTICE.txt and the accompanying license texts and
+corresponding source archive.

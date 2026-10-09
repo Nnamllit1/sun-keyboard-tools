@@ -1,0 +1,30 @@
+No license has been selected for the original Sun Keyboard Tools code.
+See COPYRIGHT.txt. The following licenses apply only to USBPcap.
+
+The installer contains the unmodified official USBPcap 1.5.4.0 installer:
+https://github.com/desowin/usbpcap/releases/tag/1.5.4.0
+USBPcap project: https://desowin.org/usbpcap/
+Copyright (c) 2013-2020 Tomasz Mon and upstream contributors.
+
+USBPcap's kernel driver is licensed under GNU GPL version 2; USBPcapCMD and
+the shared protocol header are BSD-2-Clause. Full license texts are beside
+this notice. The original C++ remapper communicates with the installed
+driver using its public IOCTL and capture formats; it does not link or
+incorporate the GPL driver implementation.
+
+Complete corresponding upstream source for the exact bundled release is
+included as usbpcap-src-incl-pdb-1.5.4.0.7z. Keep this source archive and
+these license texts with every redistribution of our installer or extracted
+package. The archive includes the upstream build/installer source and PDBs.
+Our installer installs this archive beside the application; no separate
+network request or source offer is needed to obtain it.
+
+SHA-256:
+USBPcapSetup-1.5.4.0.exe
+87a7edf9bbbcf07b5f4373d9a192a6770d2ff3add7aa1e276e82e38582ccb622
+usbpcap-src-incl-pdb-1.5.4.0.7z
+3a66cf03425f5860ff8acd64d11cc0bb50669c7f449754f47788011259a5b15e
+
+USBPcap is maintained independently. Sun Keyboard Tools is not affiliated
+with Oracle, Sun Microsystems, Microsoft, or the USBPcap project. Product
+names and trademarks belong to their respective owners.
