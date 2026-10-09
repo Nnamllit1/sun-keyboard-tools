@@ -45,6 +45,18 @@ guarantee. The upstream Windows 11 USBPcap crash report remains unresolved.
   the working keyboard system. Its state decisions are tested; the signed
   upstream driver installer/uninstaller perform the actual driver operations.
 
+## Settings refresh in 0.3.0
+
+- The settings window was rendered and visually checked with the real Type 7
+  connected, including ready, edited, paused, and monitor states.
+- Native-control checks covered editing/save feedback, pause/resume, monitor
+  mode, a shortened window, and a temporary 32-key profile. Switching back to
+  the Type 7 restored its control count and expected tab order.
+- The original profile bytes and selection were restored after the checks.
+- High-contrast system colors and DPI-scaled geometry are implemented. Live
+  high-contrast, screen-reader, and multiple-DPI display testing remain pending.
+- The capture and shortcut-injection backend is unchanged from 0.2.0.
+
 The original application code has no selected license. Third-party license
 terms remain in force; see [COPYRIGHT.txt](../COPYRIGHT.txt) and
 [third-party notices](../third-party/NOTICE.txt).

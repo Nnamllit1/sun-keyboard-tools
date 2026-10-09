@@ -1,4 +1,5 @@
 #include "backend.hpp"
+#include "appearance.hpp"
 #include <commctrl.h>
 #include <shellapi.h>
 #include <objbase.h>
@@ -11,51 +12,161 @@ namespace {
 constexpr wchar_t windowClass[]=L"SunKeyboardTools.Settings";
 constexpr UINT trayMessage=WM_APP+1;
 constexpr int profileId=100,applyId=101,pauseId=102,monitorId=103,startupId=104,folderId=105,helpId=106,resetId=107,exitId=108;
-HWND window{},statusLabel{},lastLabel{},profileBox{},pauseButton{},monitorBox{},startupBox{},countLabel{};
-HFONT normalFont{},titleFont{};
+HWND window{},statusLabel{},lastLabel{},profileBox{},pauseButton{},monitorBox{},startupBox{},stateLabel{},saveLabel{},saveButton{};
+HWND counterLabels[3]{};
+sun::ui::Appearance appearance;
 std::vector<HWND> rows;
+std::vector<HWND> layoutControls;
 std::vector<std::filesystem::path> profiles;
 sun::Profile profile;
 size_t selected{};
 sun::Backend backend;
 bool paused{},monitor{},dirty{};
 UINT dpi=96,taskbarCreated{};
-int footerY{};
+int footerY{},contentHeight{},scrollY{},wheelDelta{};
+int activeMapping{-1};
+ULONGLONG highlightUntil{};
+sun::Status currentStatus;
 NOTIFYICONDATAW tray{};
 int px(int v){return MulDiv(v,dpi,96);}
 std::wstring value(HWND h){auto n=GetWindowTextLengthW(h);std::wstring s(n+1,0);GetWindowTextW(h,s.data(),n+1);s.resize(n);return s;}
 void error(const std::exception& e){MessageBoxW(window,sun::wide(e.what()).c_str(),L"Sun Keyboard Tools",MB_ICONERROR);}
 HWND control(const wchar_t* cls,const std::wstring& text,DWORD style,int x,int y,int w,int h,int id=0){
-    auto child=CreateWindowExW(wcscmp(cls,L"EDIT")==0?WS_EX_CLIENTEDGE:0,cls,text.c_str(),WS_CHILD|WS_VISIBLE|style,
-        px(x),px(y),px(w),px(h),window,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),nullptr,nullptr);
-    SendMessageW(child,WM_SETFONT,reinterpret_cast<WPARAM>(normalFont),TRUE);return child;
+    auto child=CreateWindowExW(wcscmp(cls,L"EDIT")==0?WS_EX_CLIENTEDGE:0,cls,text.c_str(),WS_CHILD|WS_VISIBLE|style|(wcscmp(cls,L"BUTTON")==0?BS_NOTIFY:0),
+        px(x),px(y)-scrollY,px(w),px(h),window,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),nullptr,nullptr);
+    SendMessageW(child,WM_SETFONT,reinterpret_cast<WPARAM>(appearance.normal),TRUE);return child;
 }
-void start(){backend.stop();if(!paused)backend.start(profile,monitor);SetWindowTextW(pauseButton,paused?L"Resume remapping":L"Pause remapping");}
+HWND label(const std::wstring& text,int x,int y,int w,int h,HFONT font=nullptr,UINT role=0){
+    auto child=control(L"STATIC",text,SS_NOPREFIX,x,y,w,h);
+    if(font)SendMessageW(child,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);
+    SetPropW(child,L"Sun.TextRole",reinterpret_cast<HANDLE>(static_cast<UINT_PTR>(role)));return child;
+}
+void setText(HWND h,const std::wstring& text){if(value(h)!=text)SetWindowTextW(h,text.c_str());}
+RECT rect(int x,int y,int w,int h){return {px(x),px(y),px(x+w),px(y+h)};}
+void scrollTo(int position){
+    RECT client{};GetClientRect(window,&client);
+    auto next=std::clamp(position,0,std::max(0,px(contentHeight)-static_cast<int>(client.bottom)));
+    int delta=scrollY-next;scrollY=next;
+    if(delta)ScrollWindowEx(window,0,delta,nullptr,nullptr,nullptr,nullptr,SW_SCROLLCHILDREN|SW_INVALIDATE|SW_ERASE);
+    SCROLLINFO info{sizeof(info),SIF_RANGE|SIF_PAGE|SIF_POS,0,px(contentHeight)-1,static_cast<UINT>(client.bottom),scrollY,0};
+    SetScrollInfo(window,SB_VERT,&info,TRUE);
+}
+void ensureVisible(HWND child){
+    if(!child)return;
+    RECT r{},client{};GetWindowRect(child,&r);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&r),2);GetClientRect(window,&client);
+    // A combo's window rectangle includes the dropdown; only keep its edit in view.
+    int bottom=std::min(static_cast<int>(r.bottom),static_cast<int>(r.top)+px(36));
+    if(r.top<px(12))scrollTo(scrollY+r.top-px(12));
+    else if(bottom>client.bottom-px(12))scrollTo(scrollY+bottom-client.bottom+px(12));
+}
+void saveState(bool changed,const wchar_t* message=nullptr){
+    dirty=changed;
+    setText(saveLabel,message?message:(dirty?L"Unsaved changes":L"All changes saved"));
+    EnableWindow(saveButton,dirty);InvalidateRect(saveLabel,nullptr,TRUE);
+}
+void updateStatus(){
+    auto state=backend.status();
+    setText(stateLabel,paused?L"Remapping paused":state.connected?(monitor?L"Monitor mode":L"Ready to remap"):L"Waiting for keyboard");
+    setText(statusLabel,paused?L"Your shortcuts are paused. Resume when you're ready.":state.message);
+    setText(lastLabel,state.lastKey);
+    uint64_t counts[]{state.presses,state.sent,state.skipped};
+    for(int i=0;i<3;++i)setText(counterLabels[i],std::to_wstring(counts[i]));
+    if(state.presses!=currentStatus.presses && state.presses){
+        for(size_t i=0;i<profile.mappings.size();++i)if(state.lastKey.starts_with(sun::wide(profile.mappings[i].name)+L" -> ")){
+            if(activeMapping>=0)InvalidateRect(rows[static_cast<size_t>(activeMapping)*2],nullptr,TRUE);
+            activeMapping=static_cast<int>(i);highlightUntil=GetTickCount64()+850;
+            InvalidateRect(rows[i*2],nullptr,TRUE);break;
+        }
+    }
+    if(activeMapping>=0 && GetTickCount64()>=highlightUntil){InvalidateRect(rows[static_cast<size_t>(activeMapping)*2],nullptr,TRUE);activeMapping=-1;}
+    if(state.connected!=currentStatus.connected){InvalidateRect(stateLabel,nullptr,TRUE);InvalidateRect(window,nullptr,FALSE);}
+    currentStatus=std::move(state);
+}
+void start(){
+    backend.stop();if(!paused)backend.start(profile,monitor);
+    setText(pauseButton,paused?L"Resume remapping":L"Pause remapping");
+    updateStatus();InvalidateRect(stateLabel,nullptr,TRUE);InvalidateRect(window,nullptr,FALSE);
+}
+void paint(HDC dc){
+    RECT client{};GetClientRect(window,&client);FillRect(dc,&client,appearance.canvasBrush);
+    auto saved=SaveDC(dc);SetViewportOrgEx(dc,0,-scrollY,nullptr);
+    auto card=[&](int x,int y,int w,int h){
+        appearance.round(dc,rect(x,y+2,w,h),appearance.shadow,appearance.shadow,16);
+        appearance.round(dc,rect(x,y,w,h),appearance.panel,appearance.border,16);
+    };
+    card(24,112,548,footerY+86-112);card(588,112,288,232);card(588,360,288,164);card(588,540,288,76);
+    // A small, original keyboard mark and raised key motif echo the physical keys.
+    appearance.round(dc,rect(24,28,48,48),appearance.accent,appearance.accent,14);
+    for(int y=0;y<3;++y)for(int x=0;x<3;++x)
+        appearance.round(dc,rect(34+x*10,39+y*9,7,6),appearance.highContrast?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255),appearance.highContrast?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255),2);
+    const wchar_t* caps[]{L"Undo",L"Copy",L"Paste"};
+    for(int i=0;i<3;++i){
+        auto r=rect(676+i*68,34+(i==1?-4:0),60,36);auto shadow=r;OffsetRect(&shadow,0,px(3));
+        appearance.round(dc,shadow,appearance.border,appearance.border,9);
+        appearance.round(dc,r,appearance.panel,appearance.border,9);
+        appearance.text(dc,caps[i],r,appearance.key,appearance.highContrast?appearance.ink:appearance.accent,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    }
+    auto line=rect(44,204,508,1);auto brush=CreateSolidBrush(appearance.border);FillRect(dc,&line,brush);DeleteObject(brush);
+    COLORREF stateColor=paused||!currentStatus.connected?appearance.amber:monitor?appearance.accent:appearance.green;
+    appearance.round(dc,rect(608,166,9,9),stateColor,stateColor,9);
+    RestoreDC(dc,saved);
+}
+LRESULT drawButton(NMCUSTOMDRAW* draw){
+    auto id=static_cast<int>(draw->hdr.idFrom);
+    if(draw->dwDrawStage!=CDDS_PREPAINT || id==monitorId || id==startupId || appearance.highContrast)return CDRF_DODEFAULT;
+    bool primary=id==applyId,disabled=!IsWindowEnabled(draw->hdr.hwndFrom);
+    bool hot=(draw->uItemState&CDIS_HOT)!=0,down=(draw->uItemState&CDIS_SELECTED)!=0;
+    auto r=draw->rc;FillRect(draw->hdc,&r,id==helpId?appearance.canvasBrush:appearance.panelBrush);
+    auto face=r;face.right-=px(1);face.bottom-=px(2);if(down)OffsetRect(&face,0,px(1));
+    auto shade=face;OffsetRect(&shade,0,px(2));appearance.round(draw->hdc,shade,appearance.shadow,appearance.shadow,9);
+    auto fill=disabled?appearance.canvas:primary?(hot||down?appearance.accentHot:appearance.accent):hot?appearance.tint:appearance.panel;
+    appearance.round(draw->hdc,face,fill,primary&&!disabled?fill:appearance.border,9);
+    appearance.text(draw->hdc,value(draw->hdr.hwndFrom),face,appearance.normal,
+        disabled?appearance.muted:primary?RGB(255,255,255):appearance.ink,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    if((draw->uItemState&CDIS_FOCUS) && !(SendMessageW(draw->hdr.hwndFrom,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS)){
+        InflateRect(&face,-px(4),-px(4));DrawFocusRect(draw->hdc,&face);
+    }
+    return CDRF_SKIPDEFAULT;
+}
 void saveSelected(){std::ofstream out(sun::userFolder()/L"selected.txt");out<<sun::utf8(profiles.at(selected).filename().wstring());if(!out)throw std::runtime_error("Cannot save profile selection");}
+void orderTabs(){
+    auto move=[](HWND child){if(child)SetWindowPos(child,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);};
+    for(auto child:rows)move(child);
+    for(auto id:{applyId,resetId,pauseId,monitorId,startupId,helpId})move(GetDlgItem(window,id));
+}
 void loadRows(){
     for(auto h:rows)DestroyWindow(h);rows.clear();
-    int nextFooter=170+static_cast<int>((profile.mappings.size()+1)/2)*29+12;
-    if(footerY && nextFooter!=footerY){
-        struct Shift{int oldY,delta;} shift{px(footerY),px(nextFooter-footerY)};
-        EnumChildWindows(window,[](HWND child,LPARAM data)->BOOL{
-            auto s=reinterpret_cast<Shift*>(data);RECT r{};GetWindowRect(child,&r);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&r),2);
-            if(r.top>=s->oldY)SetWindowPos(child,nullptr,r.left,r.top+s->delta,0,0,SWP_NOSIZE|SWP_NOZORDER);return TRUE;
-        },reinterpret_cast<LPARAM>(&shift));
-        RECT rect{0,0,px(700),px(nextFooter+188)};AdjustWindowRectExForDpi(&rect,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0,dpi);
-        SetWindowPos(window,nullptr,0,0,rect.right-rect.left,rect.bottom-rect.top,SWP_NOMOVE|SWP_NOZORDER);
-    }
-    footerY=nextFooter;
+    for(auto h:layoutControls)DestroyWindow(h);layoutControls.clear();
+    activeMapping=-1;
+    footerY=std::max(530,266+static_cast<int>((profile.mappings.size()+1)/2)*42+12);
+    contentHeight=footerY+142;
     for(size_t i=0;i<profile.mappings.size();++i){
-        // Two columns allow up to 32 extra keys while keeping the window compact.
         int col=static_cast<int>(i%2),row=static_cast<int>(i/2);
         auto& m=profile.mappings[i];
-        rows.push_back(control(L"STATIC",sun::wide(m.name),0,24+col*330,174+row*29,100,24));
-        auto edit=control(L"COMBOBOX",L"",CBS_DROPDOWN|WS_VSCROLL|WS_TABSTOP,128+col*330,170+row*29,210,210,200+static_cast<int>(i));
+        rows.push_back(control(L"STATIC",sun::wide(m.name),SS_OWNERDRAW,44+col*262,266+row*42,78,32,400+static_cast<int>(i)));
+        auto edit=control(L"COMBOBOX",L"",CBS_DROPDOWN|WS_VSCROLL|WS_TABSTOP,130+col*262,267+row*42,160,230,200+static_cast<int>(i));
+        SendMessageW(edit,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(22));
+        SendMessageW(edit,CB_SETITEMHEIGHT,0,px(26));
         for(auto text:{L"Disabled",L"Ctrl+C",L"Ctrl+V",L"Ctrl+X",L"Ctrl+Z",L"Ctrl+Y",L"Ctrl+F",L"Ctrl+O",L"Alt+Tab",L"Alt+Enter",L"Esc",L"F1"})
             SendMessageW(edit,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));
         SendMessageW(edit,CB_LIMITTEXT,80,0);SetWindowTextW(edit,sun::wide(m.shortcut).c_str());rows.push_back(edit);
     }
-    dirty=false;
+    layoutControls.push_back(label(L"Choose a shortcut, or type your own (e.g. Ctrl+Shift+Z).",44,footerY,508,20,appearance.caption,1));
+    saveButton=control(L"BUTTON",L"Save shortcuts",WS_TABSTOP|BS_DEFPUSHBUTTON,44,footerY+30,164,36,applyId);layoutControls.push_back(saveButton);
+    layoutControls.push_back(control(L"BUTTON",L"Restore defaults",WS_TABSTOP,220,footerY+30,148,36,resetId));
+    saveLabel=label(L"",386,footerY+41,166,20,appearance.caption,1);layoutControls.push_back(saveLabel);
+    layoutControls.push_back(label(L"Closing this window keeps your shortcuts running in the tray.",24,footerY+109,668,22,appearance.caption,1|4));
+    layoutControls.push_back(control(L"BUTTON",L"Open help",WS_TABSTOP,744,footerY+100,132,32,helpId));
+    saveState(false);
+    // Keep even extended profiles reachable on small screens and at large DPI.
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};GetMonitorInfoW(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),&monitorInfo);
+    RECT size{0,0,px(900),px(contentHeight)};
+    AdjustWindowRectExForDpi(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_VSCROLL,FALSE,WS_EX_CONTROLPARENT,dpi);
+    int height=std::min(static_cast<int>(size.bottom-size.top),static_cast<int>(monitorInfo.rcWork.bottom-monitorInfo.rcWork.top)-px(24));
+    RECT current{};GetWindowRect(window,&current);
+    int top=std::clamp(static_cast<int>(current.top),static_cast<int>(monitorInfo.rcWork.top),static_cast<int>(monitorInfo.rcWork.bottom)-height);
+    SetWindowPos(window,nullptr,current.left,top,size.right-size.left,height,SWP_NOZORDER|SWP_NOACTIVATE);
+    scrollTo(0);orderTabs();InvalidateRect(window,nullptr,TRUE);
 }
 void addTray(){
     tray={sizeof(tray)};tray.hWnd=window;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;
@@ -66,7 +177,7 @@ void addTray(){
 void show(){ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);}
 bool discard(){return !dirty || MessageBoxW(window,L"Discard your unsaved shortcut changes?",L"Sun Keyboard Tools",MB_YESNO|MB_ICONQUESTION)==IDYES;}
 void command(int id){
-    if(id>=200 && id<232){dirty=true;return;}
+    if(id>=200 && id<232){saveState(true);return;}
     switch(id){
     case applyId:{
         auto changed=profile;
@@ -74,7 +185,7 @@ void command(int id){
         sun::writeProfile(profiles.at(selected),changed);
         auto temp=profiles.at(selected);temp+=L".tmp";
         if(!MoveFileExW(temp.c_str(),profiles.at(selected).c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot replace saved profile: "+sun::utf8(sun::winError()));
-        profile=changed;dirty=false;start();break;}
+        profile=changed;saveState(false,L"Shortcuts saved");start();break;}
     case pauseId:paused=!paused;start();break;
     case monitorId:monitor=SendMessageW(monitorBox,BM_GETCHECK,0,0)==BST_CHECKED;start();break;
     case startupId:{
@@ -85,7 +196,7 @@ void command(int id){
     case resetId:
         if(MessageBoxW(window,L"Replace the displayed shortcuts with this profile's bundled defaults? Choose Save shortcuts to keep the change.",L"Restore defaults",MB_YESNO|MB_ICONQUESTION)==IDYES){
             auto path=sun::executable().parent_path()/L"profiles"/profiles.at(selected).filename();
-            auto defaults=sun::readProfile(path);profile=defaults;loadRows();dirty=true;
+            auto defaults=sun::readProfile(path);profile=defaults;loadRows();saveState(true);
         }break;
     case exitId:if(discard())DestroyWindow(window);break;
     }
@@ -94,11 +205,60 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
     try{
         if(msg==taskbarCreated && taskbarCreated){addTray();return 0;}
         switch(msg){
+        case WM_ERASEBKGND:return 1;
+        case WM_PAINT:{
+            PAINTSTRUCT ps{};auto dc=BeginPaint(hwnd,&ps);paint(dc);EndPaint(hwnd,&ps);return 0;}
+        case WM_PRINTCLIENT:paint(reinterpret_cast<HDC>(wp));return 0;
+        case WM_SETTINGCHANGE:
+        case WM_SYSCOLORCHANGE:appearance.colors();RedrawWindow(hwnd,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);return 0;
+        case WM_SIZE:if(contentHeight)scrollTo(scrollY);return 0;
+        case WM_VSCROLL:{
+            SCROLLINFO info{sizeof(info),SIF_ALL};GetScrollInfo(hwnd,SB_VERT,&info);
+            int position=scrollY;
+            switch(LOWORD(wp)){
+            case SB_LINEUP:position-=px(36);break;case SB_LINEDOWN:position+=px(36);break;
+            case SB_PAGEUP:position-=static_cast<int>(info.nPage);break;case SB_PAGEDOWN:position+=static_cast<int>(info.nPage);break;
+            case SB_THUMBTRACK:case SB_THUMBPOSITION:position=info.nTrackPos;break;
+            case SB_TOP:position=0;break;case SB_BOTTOM:position=px(contentHeight);break;
+            }
+            scrollTo(position);return 0;}
+        case WM_MOUSEWHEEL:
+            wheelDelta+=GET_WHEEL_DELTA_WPARAM(wp);
+            while(wheelDelta>=WHEEL_DELTA){scrollTo(scrollY-px(84));wheelDelta-=WHEEL_DELTA;}
+            while(wheelDelta<=-WHEEL_DELTA){scrollTo(scrollY+px(84));wheelDelta+=WHEEL_DELTA;}
+            return 0;
+        case WM_NOTIFY:
+            if(reinterpret_cast<NMHDR*>(lp)->code==NM_CUSTOMDRAW)return drawButton(reinterpret_cast<NMCUSTOMDRAW*>(lp));
+            break;
+        case WM_DRAWITEM:{
+            auto item=reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+            if(item->CtlID<400 || item->CtlID>=432)break;
+            bool active=static_cast<int>(item->CtlID)-400==activeMapping;
+            FillRect(item->hDC,&item->rcItem,appearance.panelBrush);
+            auto face=item->rcItem;face.right-=px(1);face.bottom-=px(3);
+            auto shade=face;OffsetRect(&shade,0,px(3));appearance.round(item->hDC,shade,appearance.border,appearance.border,8);
+            appearance.round(item->hDC,face,active?appearance.accent:appearance.tint,active?appearance.accent:appearance.border,8);
+            InflateRect(&face,-px(5),0);
+            appearance.text(item->hDC,value(item->hwndItem),face,appearance.key,
+                active?(appearance.highContrast?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255)):(appearance.highContrast?appearance.ink:appearance.accent),
+                DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);return TRUE;}
+        case WM_CTLCOLORBTN:
         case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX:{
+            auto child=reinterpret_cast<HWND>(lp);
+            auto role=reinterpret_cast<UINT_PTR>(GetPropW(child,L"Sun.TextRole"));
+            auto color=role&1?appearance.muted:role&2&&!appearance.highContrast?appearance.accent:appearance.ink;
+            if(child==stateLabel)color=paused||!currentStatus.connected?appearance.amber:monitor?appearance.accent:appearance.green;
+            if(child==saveLabel && dirty)color=appearance.amber;
+            SetTextColor(reinterpret_cast<HDC>(wp),color);
             SetBkMode(reinterpret_cast<HDC>(wp),TRANSPARENT);
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+            SetBkColor(reinterpret_cast<HDC>(wp),role&4?appearance.canvas:appearance.panel);
+            return reinterpret_cast<LRESULT>(role&4?appearance.canvasBrush:appearance.panelBrush);}
         case WM_CLOSE:ShowWindow(hwnd,SW_HIDE);return 0;
         case WM_COMMAND:
+            if(HIWORD(wp)==CBN_SETFOCUS || HIWORD(wp)==BN_SETFOCUS){ensureVisible(reinterpret_cast<HWND>(lp));return 0;}
+            if(LOWORD(wp)>=applyId && LOWORD(wp)<=exitId && HIWORD(wp)!=BN_CLICKED)return 0;
             if(LOWORD(wp)==profileId && HIWORD(wp)==CBN_SELCHANGE){
                 auto next=static_cast<size_t>(SendMessageW(profileBox,CB_GETCURSEL,0,0));
                 if(!discard()){SendMessageW(profileBox,CB_SETCURSEL,selected,0);return 0;}
@@ -108,12 +268,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
             }
             if(LOWORD(wp)>=200 && HIWORD(wp)!=CBN_EDITCHANGE && HIWORD(wp)!=CBN_SELCHANGE)return 0;
             command(LOWORD(wp));return 0;
-        case WM_TIMER:{
-            auto state=backend.status();
-            SetWindowTextW(statusLabel,paused?L"Paused. Use Resume remapping when you are ready.":state.message.c_str());
-            SetWindowTextW(lastLabel,state.lastKey.c_str());
-            auto counts=L"Extra keys: "+std::to_wstring(state.presses)+L"   Shortcuts sent: "+std::to_wstring(state.sent)+L"   Skipped: "+std::to_wstring(state.skipped);
-            SetWindowTextW(countLabel,counts.c_str());return 0;}
+        case WM_TIMER:updateStatus();return 0;
         case trayMessage:
             if(LOWORD(lp)==NIN_SELECT || LOWORD(lp)==NIN_KEYSELECT){show();return 0;}
             if(LOWORD(lp)==WM_CONTEXTMENU){
@@ -152,36 +307,51 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         if(GetLastError()==ERROR_ALREADY_EXISTS){auto other=FindWindowW(windowClass,nullptr);if(other){ShowWindow(other,SW_RESTORE);SetForegroundWindow(other);}return 0;}
         initProfiles();
         INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
-        dpi=GetDpiForSystem();normalFont=CreateFontW(-px(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        titleFont=CreateFontW(-px(25),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        WNDCLASSW cls{};cls.lpfnWndProc=proc;cls.hInstance=instance;cls.lpszClassName=windowClass;cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(1));
+        dpi=GetDpiForSystem();appearance.init(dpi);
+        WNDCLASSW cls{};cls.lpfnWndProc=proc;cls.hInstance=instance;cls.lpszClassName=windowClass;
+        cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(1));
         if(!RegisterClassW(&cls))throw std::runtime_error("Cannot register settings window: "+sun::utf8(sun::winError()));
-        RECT size{0,0,px(700),px(820)};AdjustWindowRectExForDpi(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0,dpi);
-        footerY=170+static_cast<int>((profile.mappings.size()+1)/2)*29+12;
-        size={0,0,px(700),px(footerY+188)};AdjustWindowRectExForDpi(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0,dpi);
-        window=CreateWindowW(windowClass,L"Sun Keyboard Tools",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,size.right-size.left,size.bottom-size.top,nullptr,nullptr,instance,nullptr);
+        window=CreateWindowExW(WS_EX_CONTROLPARENT,windowClass,L"Sun Keyboard Tools",
+            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_VSCROLL|WS_CLIPCHILDREN,
+            CW_USEDEFAULT,CW_USEDEFAULT,px(920),px(710),nullptr,nullptr,instance,nullptr);
         if(!window)throw std::runtime_error("Cannot create settings window: "+sun::utf8(sun::winError()));
-        auto title=control(L"STATIC",L"Your Sun keys, useful again.",0,24,18,650,38);SendMessageW(title,WM_SETFONT,reinterpret_cast<WPARAM>(titleFont),TRUE);
-        statusLabel=control(L"STATIC",L"Starting...",0,24,63,652,48);
-        control(L"STATIC",L"Keyboard profile",0,24,121,130,22);
-        profileBox=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,116,330,230,profileId);
-        for(auto& path:profiles)SendMessageW(profileBox,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(path.stem().c_str()));
+        label(L"Sun Keyboard Tools",88,24,560,38,appearance.title,4);
+        label(L"Your Sun keys, useful again.",90,65,520,24,appearance.normal,1|4);
+        label(L"KEYBOARD PROFILE",44,132,270,20,appearance.caption,1);
+        profileBox=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,44,155,338,230,profileId);
+        SendMessageW(profileBox,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));
+        for(auto& path:profiles){
+            auto name=path.stem().wstring();
+            try{name=sun::wide(sun::readProfile(path).name);}catch(const std::exception&){}
+            SendMessageW(profileBox,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(name.c_str()));
+        }
         SendMessageW(profileBox,CB_SETCURSEL,selected,0);
-        control(L"BUTTON",L"Profile folder",WS_TABSTOP,506,116,170,28,folderId);
+        control(L"BUTTON",L"Profile folder",WS_TABSTOP,396,155,156,32,folderId);
+        label(L"Extra key shortcuts",44,218,400,24,appearance.heading);
+        for(int col=0;col<2;++col){
+            label(L"SUN KEY",44+col*262,247,78,18,appearance.caption,1);
+            label(L"WINDOWS SHORTCUT",130+col*262,247,160,18,appearance.caption,1);
+        }
         loadRows();
-        control(L"STATIC",L"Choose a shortcut or type one, such as Ctrl+Shift+Z. Use Disabled to ignore a key.",0,24,footerY,652,24);
-        control(L"BUTTON",L"Save shortcuts",WS_TABSTOP|BS_DEFPUSHBUTTON,24,footerY+34,156,32,applyId);
-        control(L"BUTTON",L"Restore defaults",WS_TABSTOP,192,footerY+34,156,32,resetId);
-        pauseButton=control(L"BUTTON",L"Pause remapping",WS_TABSTOP,360,footerY+34,156,32,pauseId);
-        control(L"BUTTON",L"Help",WS_TABSTOP,528,footerY+34,148,32,helpId);
-        monitorBox=control(L"BUTTON",L"Key monitor (no actions)",BS_AUTOCHECKBOX|WS_TABSTOP,24,footerY+78,280,24,monitorId);
-        startupBox=control(L"BUTTON",L"Start automatically when I sign in",BS_AUTOCHECKBOX|WS_TABSTOP,320,footerY+78,356,24,startupId);
+        label(L"KEYBOARD STATUS",608,132,248,20,appearance.caption,1);
+        stateLabel=label(L"Starting...",628,160,228,26,appearance.heading);
+        statusLabel=label(L"",608,198,248,62,appearance.normal,1);
+        pauseButton=control(L"BUTTON",L"Pause remapping",WS_TABSTOP,608,268,248,32,pauseId);
+        monitorBox=control(L"BUTTON",L"Key monitor (no actions)",BS_AUTOCHECKBOX|WS_TABSTOP,608,310,248,22,monitorId);
+        label(L"LIVE ACTIVITY",608,379,248,18,appearance.caption,1);
+        const wchar_t* names[]{L"Key presses",L"Sent",L"Skipped"};
+        for(int i=0;i<3;++i){
+            counterLabels[i]=label(L"0",608+i*86,401,78,34,appearance.number,2);
+            label(names[i],608+i*86,439,78,18,appearance.caption,1);
+        }
+        lastLabel=label(L"No extra key received yet",608,477,248,38,appearance.caption,1);
+        startupBox=control(L"BUTTON",L"Start when I sign in",BS_AUTOCHECKBOX|WS_TABSTOP,608,554,248,24,startupId);
+        label(L"Runs quietly in the notification area.",608,585,248,18,appearance.caption,1);
         SendMessageW(startupBox,BM_SETCHECK,sun::hasStartup()?BST_CHECKED:BST_UNCHECKED,0);
-        lastLabel=control(L"STATIC",L"No extra key received yet",0,24,footerY+111,652,24);
-        countLabel=control(L"STATIC",L"",0,24,footerY+141,652,24);
+        orderTabs();
         taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();SetTimer(window,1,500,nullptr);start();
         if(!background)ShowWindow(window,SW_SHOW);
-        MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){if(!IsDialogMessageW(window,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}}
-        DeleteObject(normalFont);DeleteObject(titleFont);CoUninitialize();return 0;
+        MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){if(!IsDialogMessageW(window,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}else if(msg.message==WM_KEYDOWN && msg.wParam==VK_TAB)ensureVisible(GetFocus());}
+        appearance.release();CoUninitialize();return 0;
     }catch(const std::exception& e){error(e);CoUninitialize();return 1;}
 }

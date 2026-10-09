@@ -27,6 +27,12 @@ the network. The kernel filter itself attaches to the USB class system-wide.
 profile selection, and startup control. Original defaults are copied to
 LocalAppData only if missing. Saving uses a temporary file plus Windows atomic
 replacement. Capture runs on a cancellable worker thread; the UI polls status.
+`src/appearance.hpp` supplies the settings palette, fonts, and GDI accents.
+Editable combo boxes, buttons, and checkboxes remain standard Windows controls;
+custom drawing adds panel depth and keycap styling. The high-contrast path uses
+system colors and standard button rendering. The content scrolls vertically when
+its DPI-scaled height exceeds the available work area, and keyboard focus is
+scrolled into view. Profile changes rebuild the mapping controls and tab order.
 
 `src/windows.cpp` registers a per-user Task Scheduler logon task with an
 interactive token and highest available privilege. No password is stored. It

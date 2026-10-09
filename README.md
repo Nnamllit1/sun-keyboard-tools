@@ -18,9 +18,11 @@ USBPcap driver and its matching source archive.
 > The original application and setup executable are unsigned; the bundled
 > USBPcap installer has an upstream Authenticode signature.
 
+![Settings with raised key labels, shortcut controls, and live keyboard status](docs/images/settings.png)
+
 ## Install and use
 
-1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.2.0-x64.exe`.
+1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.3.0-x64.exe`.
 2. Review the setup summary and choose **Install**. Administrator access is needed.
 3. Restart Windows if setup installed USBPcap for the first time. Setup never
    restarts your computer automatically.
@@ -58,6 +60,9 @@ These are global shortcuts; their effects depend on the focused application.
 Choose or type a different shortcut in settings and click **Save shortcuts**.
 For example, use `Ctrl+Shift+Z` for redo in an application that expects it.
 `Disabled` leaves an extra key without an assigned action.
+The save indicator shows pending edits; **Save shortcuts** becomes available when
+you change a shortcut. The status and activity panels show capture mode and counts.
+Longer profiles and shorter displays can scroll to keep every control reachable.
 
 **Key monitor** shows mapped extra-key presses without sending shortcuts.
 **Pause remapping** stops capture temporarily. Closing settings leaves the app in
@@ -67,7 +72,7 @@ Pause and monitor mode reset when you launch the app again.
 ## Automatic startup
 
 Setup registers a Task Scheduler logon task for the installing account, running
-with highest available privileges. Toggle **Start automatically when I sign in**
+with highest available privileges. Toggle **Start when I sign in**
 in settings to remove or recreate it. Interactive remapping starts after sign-in;
 it does not run on the lock/login screen or require a new custom driver.
 
