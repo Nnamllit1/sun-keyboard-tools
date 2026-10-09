@@ -1,4 +1,5 @@
 #include "backend.hpp"
+#include "ipc.hpp"
 #include "appearance.hpp"
 #include <commctrl.h>
 #include <shellapi.h>
@@ -193,10 +194,12 @@ void command(int id,HWND owner=nullptr){
         auto temp=profiles.at(selected);temp+=L".tmp";
         if(!MoveFileExW(temp.c_str(),profiles.at(selected).c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot replace saved profile: "+sun::utf8(sun::winError()));
         profile=changed;saveState(false,L"Shortcuts saved");start();break;}
-    case pauseId:paused=!paused;start();break;
+    case pauseId:
+        if(paused){auto pipe=sun::connectCapture();if(!pipe)sun::requestCapture(window);}
+        paused=!paused;start();break;
     case monitorId:monitor=SendMessageW(monitorBox,BM_GETCHECK,0,0)==BST_CHECKED;start();break;
     case startupId:{
-        try{sun::setStartup(SendMessageW(startupBox,BM_GETCHECK,0,0)==BST_CHECKED,sun::executable());}
+        try{sun::changeStartup(SendMessageW(startupBox,BM_GETCHECK,0,0)==BST_CHECKED,settingsWindow);}
         catch(...){SendMessageW(startupBox,BM_SETCHECK,sun::hasStartup()?BST_CHECKED:BST_UNCHECKED,0);throw;}break;}
     case folderId:ShellExecuteW(window,L"open",(sun::userFolder()/L"profiles").c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;
     case helpId:ShellExecuteW(window,L"open",(sun::executable().parent_path()/L"README.html").c_str(),nullptr,nullptr,SW_SHOWNORMAL);break;
@@ -400,16 +403,16 @@ void initProfiles(){
 }
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
-    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32|LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
-    CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     try{
+        sun::hardenProcess();
         int argc{};auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);
         bool background=false;for(int i=1;i<argc;++i)if(std::wstring_view(argv[i])==L"--background")background=true;
         LocalFree(argv);
-        if(!sun::elevated())throw std::runtime_error("Run Sun Keyboard Tools as administrator to access USBPcap.");
+        if(sun::elevated()){sun::launchNormal(sun::executable(),background?L"--background":L"");return 0;}
+        CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
         sun::Handle singleton(CreateMutexW(nullptr,TRUE,L"Local\\SunKeyboardTools.App"));
-        if(GetLastError()==ERROR_ALREADY_EXISTS){auto other=FindWindowW(windowClass,nullptr);if(other){ShowWindow(other,SW_RESTORE);SetForegroundWindow(other);}return 0;}
+        if(GetLastError()==ERROR_ALREADY_EXISTS){auto other=FindWindowW(windowClass,nullptr);if(other && !background){ShowWindow(other,SW_RESTORE);SetForegroundWindow(other);}return 0;}
         initProfiles();
         INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
         dpi=GetDpiForSystem();appearance.init(dpi);
@@ -431,7 +434,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             label(L"WINDOWS SHORTCUT",130+col*276,174,168,18,appearance.caption,1);
         }
         loadRows();
-        taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();SetTimer(window,1,500,nullptr);start();
+        taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();SetTimer(window,1,500,nullptr);
+        try{auto pipe=sun::connectCapture();if(!pipe && !background)sun::requestCapture(window);}catch(const std::exception& e){error(e);}
+        start();
         if(!background)ShowWindow(window,SW_SHOW);
         MSG msg{};
         while(GetMessageW(&msg,nullptr,0,0)>0){

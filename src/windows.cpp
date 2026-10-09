@@ -1,4 +1,5 @@
 #include "windows.hpp"
+#include "security.hpp"
 #include <shlobj.h>
 #include <sddl.h>
 #include <taskschd.h>
@@ -73,6 +74,9 @@ bool hasStartup() {
     check(hr); VARIANT_BOOL enabled{};check(task->get_Enabled(&enabled));return enabled!=VARIANT_FALSE;
 }
 void setStartup(bool enabled,const std::filesystem::path& exe) {
+    if(!elevated())throw std::runtime_error("Changing privileged startup requires administrator permission");
+    if(exe!=installFolder()/L"sun-keyboard-capture.exe")throw std::runtime_error("Startup requires the installed capture helper");
+    std::vector<Handle> locks;if(enabled)locks=lockProtected(exe);
     ComPtr<ITaskService> service;
     auto folder=taskFolder(service);
     auto account=sid(), name=L"SunKeyboardTools-"+account;
@@ -90,6 +94,7 @@ void setStartup(bool enabled,const std::filesystem::path& exe) {
     check(settings->put_ExecutionTimeLimit(_bstr_t(L"PT0S")));
     check(settings->put_MultipleInstances(TASK_INSTANCES_IGNORE_NEW));
     check(settings->put_StartWhenAvailable(VARIANT_TRUE));
+    check(settings->put_RestartCount(3));check(settings->put_RestartInterval(_bstr_t(L"PT1M")));
     ComPtr<ITriggerCollection> triggers;check(task->get_Triggers(&triggers));
     ComPtr<ITrigger> trigger;check(triggers->Create(TASK_TRIGGER_LOGON,&trigger));
     ComPtr<ILogonTrigger> logon;check(trigger.As(&logon));
@@ -101,6 +106,35 @@ void setStartup(bool enabled,const std::filesystem::path& exe) {
     check(exec->put_WorkingDirectory(_bstr_t(exe.parent_path().c_str())));
     ComPtr<IRegisteredTask> registered;
     check(folder->RegisterTaskDefinition(_bstr_t(name.c_str()),task.Get(),TASK_CREATE_OR_UPDATE,
-          _variant_t(account.c_str()),_variant_t(),TASK_LOGON_INTERACTIVE_TOKEN,_variant_t(),&registered));
+          _variant_t(account.c_str()),_variant_t(),TASK_LOGON_INTERACTIVE_TOKEN,
+          _variant_t((L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;"+account+L")").c_str()),&registered));
+}
+bool runStartup() {
+    try {
+        ComPtr<ITaskService> service;auto folder=taskFolder(service);ComPtr<IRegisteredTask> task;
+        check(folder->GetTask(_bstr_t((L"SunKeyboardTools-"+sid()).c_str()),&task));
+        BSTR raw{};check(task->GetSecurityDescriptor(OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION,&raw));
+        _bstr_t descriptor(raw,false);PSECURITY_DESCRIPTOR sd{};
+        if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptor,SDDL_REVISION_1,&sd,nullptr))return false;
+        struct Free {void* p;~Free(){LocalFree(p);}} cleanup{sd};
+        PSID owner{};BOOL defaulted{},present{};PACL acl{};
+        if(!GetSecurityDescriptorOwner(sd,&owner,&defaulted) || !owner || !IsWellKnownSid(owner,WinBuiltinAdministratorsSid) ||
+           !GetSecurityDescriptorDacl(sd,&present,&acl,&defaulted) || !present || !acl)return false;
+        for(DWORD i=0;i<acl->AceCount;++i) {
+            void* rawAce{};if(!GetAce(acl,i,&rawAce))return false;auto header=static_cast<ACE_HEADER*>(rawAce);
+            if(header->AceType==ACCESS_DENIED_ACE_TYPE)continue;
+            if(header->AceType!=ACCESS_ALLOWED_ACE_TYPE)return false;
+            auto ace=static_cast<ACCESS_ALLOWED_ACE*>(rawAce);auto trustee=&ace->SidStart;
+            if(!IsWellKnownSid(trustee,WinBuiltinAdministratorsSid) && !IsWellKnownSid(trustee,WinLocalSystemSid) &&
+               (ace->Mask&(GENERIC_ALL|GENERIC_WRITE|WRITE_DAC|WRITE_OWNER|DELETE|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_EA|FILE_WRITE_ATTRIBUTES)))return false;
+        }
+        ComPtr<ITaskDefinition> definition;check(task->get_Definition(&definition));ComPtr<IActionCollection> actions;check(definition->get_Actions(&actions));
+        LONG count{};check(actions->get_Count(&count));if(count!=1)return false;
+        ComPtr<IAction> action;check(actions->get_Item(1,&action));ComPtr<IExecAction> exec;check(action.As(&exec));
+        BSTR path{},args{};check(exec->get_Path(&path));_bstr_t exePath(path,false);check(exec->get_Arguments(&args));_bstr_t arguments(args,false);
+        auto expected=installFolder()/L"sun-keyboard-capture.exe";
+        if(_wcsicmp(exePath,expected.c_str())!=0 || wcscmp(arguments,L"--background")!=0)return false;
+        auto locks=lockProtected(expected);ComPtr<IRunningTask> running;check(task->Run(_variant_t(),&running));return true;
+    }catch(const std::exception&){return false;}
 }
 }

@@ -61,7 +61,9 @@ Profile readProfile(const std::filesystem::path& path) {
     std::string line, section;
     std::set<std::string> fields;
     size_t lines{};
-    while (std::getline(in,line)) {
+    std::array<char,1026> boundedLine{};
+    while (in.getline(boundedLine.data(),static_cast<std::streamsize>(boundedLine.size()))) {
+        line=boundedLine.data();
         if (++lines > 512 || line.size()>1024) throw std::runtime_error("Profile is too large");
         line = trim(line);
         if (line.empty() || line[0]=='#' || line[0]==';') continue;
@@ -97,6 +99,7 @@ Profile readProfile(const std::filesystem::path& path) {
             p.mappings.push_back({static_cast<uint8_t>(usage),label,shortcut});
         } else throw std::runtime_error("Profile field outside a section");
     }
+    if(!in.eof())throw std::runtime_error("Profile line is too large or unreadable");
     if (p.name.empty() || p.name.size()>80 || !p.vid || !p.pid || p.mappings.empty() ||
         !(p.endpoint & 0x80) || !(p.endpoint & 0x0f) || (p.endpoint & 0x70) ||
         !p.keysCount || p.keysOffset+p.keysCount>p.reportSize || (p.reportId>=0 && !p.keysOffset))

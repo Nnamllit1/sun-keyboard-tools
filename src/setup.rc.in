@@ -9,3 +9,4 @@
 106 RCDATA "@SUN_DEPS_DIR@/usbpcap-src-incl-pdb-1.5.4.0.7z"
 107 RCDATA "@CMAKE_SOURCE_DIR@/third-party/GPL-2.0.txt"
 108 RCDATA "@CMAKE_SOURCE_DIR@/third-party/BSD-2-Clause.txt"
+109 RCDATA "$<TARGET_FILE:sun-keyboard-capture>"

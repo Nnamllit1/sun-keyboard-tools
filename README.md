@@ -22,7 +22,7 @@ USBPcap driver and its matching source archive.
 
 ## Install and use
 
-1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.4.0-x64.exe`.
+1. [Download the latest Windows installer](https://github.com/Nnamllit1/sun-keyboard-tools/releases/latest), then double-click `SunKeyboardTools-Setup-0.5.0-x64.exe`.
 2. Review the setup summary and choose **Install**. Administrator access is needed.
 3. Restart Windows if setup installed USBPcap for the first time. Setup never
    restarts your computer automatically.
@@ -82,13 +82,16 @@ remapping.
 ## Automatic startup
 
 Setup registers a Task Scheduler logon task for the installing account, running
-with highest available privileges. Toggle **Start when I sign in**
-under **Settings** to remove or recreate it. Interactive remapping starts after sign-in;
+the small capture helper with highest available privileges. The settings window,
+profile files, and shortcut injection run as a normal user. Shortcuts cannot control
+administrator-level applications. Toggle **Start when I sign in**
+under **Settings** to remove or recreate it (Windows requests administrator approval). Interactive remapping starts after sign-in;
 it does not run on the lock/login screen or require a new custom driver.
 
-If UAC is answered with a different account's credentials, profiles and startup
-belong to that administrator account. Standard-user installation with a separate
-privileged capture service is not implemented.
+Use an administrator account with UAC enabled. Elevating with a different
+account is unsupported: the capture connection is restricted to the same account
+and Windows sign-in. Standard-user installation with a separate service is not
+implemented. See [security boundaries and limitations](SECURITY.md).
 
 ## Profiles and extending support
 
@@ -126,11 +129,12 @@ See [architecture and verification](docs/ARCHITECTURE.md) for details and limits
 - **Shortcut skipped:** release held modifiers and the target shortcut key.
   Conflicting modifiers are skipped to avoid sending an unintended shortcut.
 - **No effect in one application:** check that application's shortcuts. Secure
-  desktops and some programs do not accept injected input.
+  desktops and administrator-level programs do not accept this app's input.
 
 The installed **Help** button opens an offline guide. Developers can run
-`sun-key-monitor PROFILE.ini 60 OUTPUT.txt` as administrator for a bounded,
-non-injecting report/count check. Exit the tray app first. No ordinary keys or
+`sun-key-monitor PROFILE.ini 60 OUTPUT.txt` without elevation for a bounded,
+non-injecting report/count check. Pause the tray app first; its installed capture
+helper must still be running. No ordinary keys or
 raw USB payloads are logged.
 
 ## Repair, update, or reinstall the driver
@@ -162,7 +166,10 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Run `build\Release\sun-keyboard-tools.exe` elevated once USBPcap is installed.
+Install the packaged build to provide the protected capture helper and USBPcap.
+Run `build\Release\sun-keyboard-tools.exe` without elevation to debug the UI;
+it connects to the installed helper. The elevated helper deliberately refuses to
+run from a user-writable build directory.
 The `profiles` directory and `README.html` are copied beside the executable.
 The bundled icon is original code-drawn artwork; `tools/make_icon.py` regenerates
 it if desired. The checked-in ICO allows builds without Python.

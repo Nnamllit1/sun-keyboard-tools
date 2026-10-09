@@ -9,7 +9,7 @@ int wmain(int argc,wchar_t** argv){
     try{
         if(argc!=4){std::cerr<<"Usage: sun-key-monitor PROFILE.ini SECONDS OUTPUT.txt\n";return 2;}
         int seconds=std::stoi(argv[2]);if(seconds<1||seconds>300)throw std::runtime_error("Duration must be 1 to 300 seconds");
-        if(!sun::elevated())throw std::runtime_error("Run the monitor as administrator");
+        if(sun::elevated())throw std::runtime_error("Run the monitor without administrator privileges");
         auto profile=sun::readProfile(argv[1]);
         std::ofstream output(argv[3]);if(!output)throw std::runtime_error("Cannot open output file");
         sun::Backend backend;backend.start(profile,true);

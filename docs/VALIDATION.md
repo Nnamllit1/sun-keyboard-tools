@@ -74,3 +74,13 @@ guarantee. The upstream Windows 11 USBPcap crash report remains unresolved.
 The original application code has no selected license. Third-party license
 terms remain in force; see [COPYRIGHT.txt](../COPYRIGHT.txt) and
 [third-party notices](../third-party/NOTICE.txt).
+
+## Privilege separation in 0.5.0
+
+- Core and maintenance tests pass, along with protocol validation and 10,000 deterministic malformed-request mutations. Package checks verify both executables and the embedded maintenance binary.
+- Live checks on Windows 11 build 26300 verified that the settings UI is not elevated and that the installed capture helper is elevated. A normal desktop process could not write the helper image, inject into the helper, duplicate its handles, or create another pipe server instance.
+- Short, oversized, overflowing, and unprivileged shutdown requests were rejected. A valid Type 7 request then reached ready state. A same-user fake server failed authentication.
+- The installing account can read/run the startup task; a normal process could not rewrite its security descriptor. The task launches the protected capture helper.
+- Protected-path integration checks rejected writable ACLs, hard links, and reparse points in disposable fixtures. App-only uninstall and immediate reinstall preserved profiles and the active driver. The idle helper exited after 30 seconds, and Resume restarted capture through the startup task.
+- The app update preserved saved profile bytes and the existing running USBPcap driver. Physical Copy, Paste, and Undo were confirmed after the privilege split.
+- These checks do not constitute an independent security audit, do not audit USBPcap, and do not cover every Windows configuration. Driver removal/reinstallation still has the validation limits described above.

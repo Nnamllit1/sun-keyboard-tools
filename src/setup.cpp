@@ -1,4 +1,5 @@
-﻿#include "windows.hpp"
+﻿#include "ipc.hpp"
+#include <bcrypt.h>
 #include "maintenance.hpp"
 #include "version.hpp"
 #include <commctrl.h>
@@ -9,6 +10,7 @@
 #include <wrl/client.h>
 #include <atomic>
 #include <fstream>
+#include <iostream>
 #include <functional>
 #include <thread>
 #include <vector>
@@ -19,21 +21,22 @@ struct File {int resource; const wchar_t* path;};
 constexpr File files[]{
     {100,L"sun-keyboard-tools.exe"},{101,L"profiles\\sun-type7.ini"},{102,L"README.html"},
     {103,L"COPYRIGHT.txt"},{104,L"third-party\\NOTICE.txt"},{105,L"third-party\\USBPcapSetup-1.5.4.0.exe"},
-    {106,L"third-party\\usbpcap-src-incl-pdb-1.5.4.0.7z"},{107,L"third-party\\GPL-2.0.txt"},{108,L"third-party\\BSD-2-Clause.txt"}
+    {106,L"third-party\\usbpcap-src-incl-pdb-1.5.4.0.7z"},{107,L"third-party\\GPL-2.0.txt"},{108,L"third-party\\BSD-2-Clause.txt"},
+    {109,L"sun-keyboard-capture.exe"},{110,L"Uninstall.exe"}
 };
 constexpr wchar_t uninstallKey[]=L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SunKeyboardTools";
 constexpr wchar_t usbClassKey[]=L"SYSTEM\\CurrentControlSet\\Control\\Class\\{36FC9E60-C465-11CF-8056-444553540000}";
 constexpr wchar_t resumeKey[]=L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
 using Progress=std::function<void(const std::wstring&)>;
 
-enum class Operation {install, remove, removeAll, driverInstall, driverReinstall};
+enum class Operation {install, remove, removeAll, driverInstall, driverReinstall, startupOn, startupOff};
 struct Result { bool reboot{}; std::wstring message; bool launch{}; };
 std::filesystem::path known(REFKNOWNFOLDERID id) {
     PWSTR value{};
     if(FAILED(SHGetKnownFolderPath(id,0,nullptr,&value)))throw std::runtime_error("Cannot locate Windows folder");
     std::filesystem::path path(value);CoTaskMemFree(value);return path;
 }
-std::filesystem::path installFolder(){return known(FOLDERID_ProgramFiles)/L"Sun Keyboard Tools";}
+std::filesystem::path installFolder(){return sun::installFolder();}
 std::filesystem::path driverFolder(){return known(FOLDERID_ProgramFiles)/L"USBPcap";}
 void check(bool result,const char* operation){if(!result)throw std::runtime_error(std::string(operation)+": "+sun::utf8(sun::winError()));}
 void noReparse(const std::filesystem::path& path) {
@@ -45,10 +48,18 @@ void noReparse(const std::filesystem::path& path) {
     }
 }
 void extract(const std::filesystem::path& root) {
-    noReparse(root);std::filesystem::create_directories(root);
+    std::vector<sun::Handle> rootLocks;
+    if(sun::elevated()){sun::createProtectedDirectory(root);rootLocks=sun::lockProtected(root,true);}
+    else {noReparse(root);std::filesystem::create_directories(root);}
     for(auto file:files) {
-        auto path=root/file.path;noReparse(path);std::filesystem::create_directories(path.parent_path());
         auto resource=FindResourceW(nullptr,MAKEINTRESOURCEW(file.resource),RT_RCDATA);
+        if(file.resource==110 && !resource)continue; // Installed maintenance never copies its own on-disk pathname.
+        auto path=root/file.path;noReparse(path);
+        std::vector<sun::Handle> parentLocks;
+        if(sun::elevated()) {
+            sun::createProtectedDirectory(path.parent_path());parentLocks=sun::lockProtected(path.parent_path(),true);
+            if(std::filesystem::exists(path)){auto existing=sun::lockProtected(path);}
+        } else std::filesystem::create_directories(path.parent_path());
         if(!resource)throw std::runtime_error("Setup resource is missing");
         auto data=LoadResource(nullptr,resource);auto size=SizeofResource(nullptr,resource);auto bytes=LockResource(data);
         auto temp=path;temp+=L".new-"+std::to_wstring(GetCurrentProcessId());noReparse(temp);
@@ -71,6 +82,27 @@ void trust(const std::filesystem::path& exe) {
     auto status=WinVerifyTrust(nullptr,&policy,&data);
     data.dwStateAction=WTD_STATEACTION_CLOSE;WinVerifyTrust(nullptr,&policy,&data);
     if(status!=ERROR_SUCCESS)throw std::runtime_error("USBPcap's digital signature could not be verified. No driver operation was started.");
+}
+sun::Handle pinnedDriver(const std::filesystem::path& exe,bool uninstall) {
+    auto protectedFile=sun::lockProtected(exe);
+    sun::Handle input(CreateFileW(exe.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_SEQUENTIAL_SCAN,nullptr));
+    if(!input)throw std::runtime_error("Cannot lock USBPcap executable");
+    BCRYPT_ALG_HANDLE algorithm{};BCRYPT_HASH_HANDLE hash{};
+    struct Cleanup {BCRYPT_ALG_HANDLE& a;BCRYPT_HASH_HANDLE& h;~Cleanup(){if(h)BCryptDestroyHash(h);if(a)BCryptCloseAlgorithmProvider(a,0);}} cleanup{algorithm,hash};
+    if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0 ||
+       BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)<0)throw std::runtime_error("Cannot verify USBPcap hash");
+    std::array<BYTE,65536> buffer{};DWORD count{};
+    for(;;) {
+        if(!ReadFile(input.value,buffer.data(),static_cast<DWORD>(buffer.size()),&count,nullptr))throw std::runtime_error("Cannot read USBPcap executable");
+        if(!count)break;if(BCryptHashData(hash,buffer.data(),count,0)<0)throw std::runtime_error("Cannot hash USBPcap executable");
+    }
+    std::array<BYTE,32> digest{};if(BCryptFinishHash(hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0)throw std::runtime_error("Cannot finish USBPcap hash");
+    std::string actual;constexpr char digits[]="0123456789abcdef";
+    for(auto byte:digest){actual+=digits[byte>>4];actual+=digits[byte&15];}
+    const char* expected=uninstall?"8fdc357771278f6d31b7a3a3875a31eeec794f69bf06fc393437ba73023019ad":
+        "87a7edf9bbbcf07b5f4373d9a192a6770d2ff3add7aa1e276e82e38582ccb622";
+    if(actual!=expected)throw std::runtime_error("USBPcap executable differs from the bundled 1.5.4.0 release. Use Windows Installed apps to manage a different driver version.");
+    trust(exe);return input;
 }
 DWORD run(const std::filesystem::path& exe,const std::wstring& args) {
     std::wstring command=L"\""+exe.wstring()+L"\" "+args;
@@ -122,6 +154,11 @@ void writeString(HKEY key,const wchar_t* name,const std::wstring& value) {
     if(result!=ERROR_SUCCESS)throw std::runtime_error("Cannot save installation setting: "+sun::utf8(sun::winError(result)));
 }
 void resumeAfterSignIn(bool enable) {
+    // HKCU is user-controlled, including registry links. Write it only at normal integrity.
+    if(sun::elevated()) {
+        auto exe=installFolder()/L"Uninstall.exe";auto locks=sun::lockProtected(exe);
+        sun::launchNormal(exe,enable?L"--reminder-on --quiet":L"--reminder-off --quiet",true);return;
+    }
     HKEY key{};
     auto result=RegCreateKeyExW(HKEY_CURRENT_USER,resumeKey,0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr);
     if(result!=ERROR_SUCCESS)throw std::runtime_error("Cannot configure driver setup reminder");
@@ -141,18 +178,28 @@ void stopApp() {
     }
     for(int i=0;i<50;++i) {
         sun::Handle mutex(OpenMutexW(SYNCHRONIZE,FALSE,L"Local\\SunKeyboardTools.App"));
-        if(!mutex)return;Sleep(100);
+        if(!mutex){sun::stopCapture();return;}Sleep(100);
     }
     throw std::runtime_error("The remapper is still running. Choose Exit from its tray menu and retry.");
 }
 void makeShortcut(const std::wstring& name,const std::filesystem::path& exe,const wchar_t* args) {
+    if(sun::elevated())throw std::runtime_error("Start menu shortcuts require a normal user process");
     Microsoft::WRL::ComPtr<IShellLinkW> link;
     if(FAILED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&link))))throw std::runtime_error("Cannot create Start menu shortcut");
     link->SetPath(exe.c_str());link->SetArguments(args);link->SetWorkingDirectory(exe.parent_path().c_str());
     link->SetDescription(L"Sun keyboard remapping and setup");link->SetIconLocation(exe.c_str(),0);
     Microsoft::WRL::ComPtr<IPersistFile> file;link.As(&file);
-    auto path=known(FOLDERID_CommonPrograms)/(name+L".lnk");
+    auto path=known(FOLDERID_Programs)/(name+L".lnk");std::filesystem::create_directories(path.parent_path());
     if(FAILED(file->Save(path.c_str(),TRUE)))throw std::runtime_error("Cannot save Start menu shortcut");
+}
+void shortcuts(bool install) {
+    if(sun::elevated())throw std::runtime_error("Start menu maintenance requires a normal user process");
+    for(auto name:{L"Sun Keyboard Tools.lnk",L"Sun Keyboard Tools Setup.lnk"}) {
+        // Remove legacy shared links only with the user's existing permissions.
+        std::error_code ignored;std::filesystem::remove(known(FOLDERID_CommonPrograms)/name,ignored);
+        if(!install)std::filesystem::remove(known(FOLDERID_Programs)/name,ignored);
+    }
+    if(install){makeShortcut(L"Sun Keyboard Tools",installFolder()/L"sun-keyboard-tools.exe",L"");makeShortcut(L"Sun Keyboard Tools Setup",installFolder()/L"Uninstall.exe",L"--manage");}
 }
 void registerApp(const std::filesystem::path& root) {
     HKEY key{};
@@ -174,7 +221,8 @@ void installDriver(const Progress& progress) {
     auto facts=driverFacts();
     if(!sun::mayInstallDriver(facts))throw std::runtime_error(sun::utf8(driverDescription(facts))+" Setup will not overwrite a loaded or pending driver. Restart if requested, or use Reinstall driver.");
     auto driver=installFolder()/L"third-party"/L"USBPcapSetup-1.5.4.0.exe";
-    progress(L"Verifying and installing the signed USBPcap driver...");trust(driver);
+    auto driverLocks=sun::lockProtected(driver.parent_path(),true);auto pinned=pinnedDriver(driver,false);
+    progress(L"Verifying and installing the signed USBPcap driver...");
     auto result=run(driver,L"/S");
     if(result!=0 && result!=3010)throw std::runtime_error("USBPcap installer returned "+std::to_string(result));
     auto after=driverFacts();
@@ -184,45 +232,44 @@ void installDriver(const Progress& progress) {
 void removeDriver(const Progress& progress) {
     auto uninstaller=driverFolder()/L"Uninstall.exe";noReparse(uninstaller);
     if(!std::filesystem::exists(uninstaller))throw std::runtime_error("The USBPcap uninstaller was not found in Program Files. Remove USBPcap through Windows Installed apps, restart, then reopen Sun Keyboard Tools Setup.");
-    trust(uninstaller);progress(L"Removing the shared USBPcap driver. Please wait...");
+    auto driverLocks=sun::lockProtected(uninstaller.parent_path(),true);auto pinned=pinnedDriver(uninstaller,true);
+    progress(L"Removing the shared USBPcap driver. Please wait...");
     // NSIS _?= keeps this process as the uninstaller so waiting is meaningful.
     auto result=run(uninstaller,L"/S _?="+driverFolder().wstring());
     if(result!=0 && result!=3010)throw std::runtime_error("USBPcap uninstaller returned "+std::to_string(result));
     if(driverFacts().filter)throw std::runtime_error("USBPcap still appears in the USB filter list. Check Windows Installed apps before continuing.");
 }
 Result install(const Progress& progress) {
-    auto root=installFolder();noReparse(root);
+    auto root=installFolder();sun::createProtectedDirectory(root);auto rootLocks=sun::lockProtected(root,true);
     bool existed=std::filesystem::exists(root/L"sun-keyboard-tools.exe");
     bool startup=existed?sun::hasStartup():true;
     auto facts=driverFacts();
     progress(L"Closing the remapper safely...");stopApp();
     progress(L"Installing application files and keyboard profiles...");extract(root);
-    auto own=sun::executable();auto maintenance=root/L"Uninstall.exe";
-    noReparse(maintenance);
-    if(!std::filesystem::equivalent(own,root/L"sun-keyboard-tools.exe") && own!=maintenance)
-        check(CopyFileW(own.c_str(),maintenance.c_str(),FALSE)!=FALSE,"Install maintenance wizard");
+    auto maintenance=root/L"Uninstall.exe";
     registerApp(root);
     bool reboot=false;
     if(sun::mayInstallDriver(facts)){installDriver(progress);reboot=true;}
     else reboot=sun::driverPhase(facts)!=sun::DriverPhase::active;
     progress(L"Adding Start menu shortcuts and restoring your startup preference...");
-    makeShortcut(L"Sun Keyboard Tools",root/L"sun-keyboard-tools.exe",L"");
-    makeShortcut(L"Sun Keyboard Tools Setup",maintenance,L"--manage");
-    sun::setStartup(startup,root/L"sun-keyboard-tools.exe");
+    sun::launchNormal(maintenance,L"--shortcuts-on --quiet",true);
+    sun::setStartup(startup,root/L"sun-keyboard-capture.exe");
     if(sun::driverPhase(driverFacts())==sun::DriverPhase::incomplete)
         return {false,L"The app is installed, but USBPcap needs attention. Choose Driver options in Setup. Your profiles and startup preference were preserved.",false};
     return {reboot,reboot?L"The app is installed. Restart Windows when you are ready, then open Sun Keyboard Tools. Setup will not restart Windows automatically.":
         L"The app is ready. Your existing profiles and startup preference were preserved. Open Sun Keyboard Tools to continue.",!reboot};
 }
 void deleteFile(const std::filesystem::path& path) {
+    auto parentLocks=sun::lockProtected(path.parent_path(),true);
+    if(std::filesystem::exists(path)){auto existing=sun::lockProtected(path);}
     noReparse(path);std::error_code error;std::filesystem::remove(path,error);
     if(error)throw std::runtime_error("Could not remove "+sun::utf8(path.wstring())+": "+error.message());
 }
 void uninstall(const Progress& progress) {
-    auto root=installFolder();noReparse(root);stopApp();
+    auto root=installFolder();auto rootLocks=sun::lockProtected(root,true);stopApp();
     progress(L"Removing the app and this account's startup task...");
-    sun::setStartup(false,root/L"sun-keyboard-tools.exe");resumeAfterSignIn(false);
-    for(auto name:{L"Sun Keyboard Tools.lnk",L"Sun Keyboard Tools Setup.lnk"})deleteFile(known(FOLDERID_CommonPrograms)/name);
+    sun::setStartup(false,root/L"sun-keyboard-capture.exe");resumeAfterSignIn(false);
+    sun::launchNormal(root/L"Uninstall.exe",L"--shortcuts-off --quiet",true);
     // Rename a running uninstaller to a unique protected path. Never schedule
     // deletion of the normal install path: a reinstall before reboot must survive.
     auto maintenance=root/L"Uninstall.exe";
@@ -230,22 +277,27 @@ void uninstall(const Progress& progress) {
         if(sun::executable()==maintenance) {
             GUID guid{};check(SUCCEEDED(CoCreateGuid(&guid)),"Create cleanup ID");wchar_t text[40]{};StringFromGUID2(guid,text,40);
             auto cleanup=known(FOLDERID_ProgramFiles)/L"Sun Keyboard Tools Cleanup"/text;
-            noReparse(cleanup);std::filesystem::create_directories(cleanup);
+            sun::createProtectedDirectory(cleanup.parent_path());sun::createProtectedDirectory(cleanup);
+            auto cleanupLocks=sun::lockProtected(cleanup,true);
             auto moved=cleanup/L"Uninstall.exe";
             check(MoveFileExW(maintenance.c_str(),moved.c_str(),MOVEFILE_WRITE_THROUGH)!=FALSE,"Prepare uninstaller cleanup");
             check(MoveFileExW(moved.c_str(),nullptr,MOVEFILE_DELAY_UNTIL_REBOOT)!=FALSE,"Schedule uninstaller cleanup");
             MoveFileExW(cleanup.c_str(),nullptr,MOVEFILE_DELAY_UNTIL_REBOOT);
         } else deleteFile(maintenance);
     }
-    for(auto file:files)deleteFile(root/file.path);
+    for(auto file:files)if(file.resource!=110)deleteFile(root/file.path);
     std::error_code ignored;
     std::filesystem::remove(root/L"profiles",ignored);std::filesystem::remove(root/L"third-party",ignored);
+    rootLocks.pop_back(); // Release only the leaf; keep its protected parents locked.
     std::filesystem::remove(root,ignored); // Leave any unknown/user-added files.
     auto reg=RegDeleteKeyExW(HKEY_LOCAL_MACHINE,uninstallKey,KEY_WOW64_64KEY,0);
     if(reg!=ERROR_SUCCESS && reg!=ERROR_FILE_NOT_FOUND)throw std::runtime_error("Cannot remove Installed apps entry");
 }
 Result perform(Operation operation,const Progress& progress) {
     switch(operation) {
+    case Operation::startupOn:case Operation::startupOff:
+        sun::setStartup(operation==Operation::startupOn,installFolder()/L"sun-keyboard-capture.exe");
+        return {false,L"Startup preference saved.",false};
     case Operation::install:return install(progress);
     case Operation::remove:uninstall(progress);return {false,L"Sun Keyboard Tools was removed. Saved profiles and the shared USBPcap driver were kept. You can reinstall the app immediately.",false};
     case Operation::removeAll: {
@@ -304,7 +356,7 @@ void finish(const Result& result) {
     dialog.pszContent=result.message.c_str();dialog.dwFlags=TDF_SIZE_TO_CONTENT;dialog.dwCommonButtons=TDCBF_CLOSE_BUTTON;
     TASKDIALOG_BUTTON open{200,L"Open Sun Keyboard Tools"};if(result.launch){dialog.cButtons=1;dialog.pButtons=&open;dialog.nDefaultButton=200;}
     int clicked{};TaskDialogIndirect(&dialog,&clicked,nullptr,nullptr);
-    if(clicked==200)ShellExecuteW(nullptr,L"open",(installFolder()/L"sun-keyboard-tools.exe").c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+    if(clicked==200){auto locks=sun::lockProtected(installFolder()/L"sun-keyboard-tools.exe");sun::launchNormal(installFolder()/L"sun-keyboard-tools.exe",L"");}
 }
 int driverScreen() {
     auto facts=driverFacts();auto status=driverDescription(facts);
@@ -351,15 +403,17 @@ int front(bool remove) {
 }
 }
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
-    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32|LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
-    CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);bool quiet=false;
+    bool quiet=false;
     try {
+        sun::hardenProcess();
         int argc{};auto raw=CommandLineToArgvW(GetCommandLineW(),&argc);std::vector<std::wstring> args(raw,raw+argc);LocalFree(raw);
         if(argc==3 && args[1]==L"--extract") {
             quiet=true;
+            if(sun::elevated())throw std::runtime_error("Payload extraction must run without administrator privileges");
             auto root=std::filesystem::absolute(args[2]);if(std::filesystem::exists(root))throw std::runtime_error("Extraction destination must not already exist");
             extract(root);trust(root/L"third-party"/L"USBPcapSetup-1.5.4.0.exe");return 0;
         }
+        CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
         INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
         std::wstring command=argc>1?args[1]:L"";
         quiet=argc>2 && args[2]==L"--quiet";
@@ -369,6 +423,8 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
         else if(command==L"--remove-all")operation=Operation::removeAll;
         else if(command==L"--driver-install")operation=Operation::driverInstall;
         else if(command==L"--driver-reinstall")operation=Operation::driverReinstall;
+        else if(command==L"--startup-on")operation=Operation::startupOn;
+        else if(command==L"--startup-off")operation=Operation::startupOff;
         else direct=false;
         if(direct) {
             if(!sun::elevated())throw std::runtime_error("Use the graphical setup window to request administrator access.");
@@ -379,10 +435,15 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
             Result result=quiet?perform(operation,[](const std::wstring&){}):withProgress(operation);
             if(!quiet)finish(result);return result.reboot?3010:0;
         }
+        // All shell associations and the maintenance menu run at normal integrity.
+        if(sun::elevated()){sun::launchNormal(sun::executable(),command);return 0;}
+        if(command==L"--reminder-on" || command==L"--reminder-off"){resumeAfterSignIn(command==L"--reminder-on");return 0;}
+        if(command==L"--shortcuts-on" || command==L"--shortcuts-off"){shortcuts(command==L"--shortcuts-on");return 0;}
         if(command==L"--driver")return driverScreen();
         return front(command==L"--uninstall");
     } catch(const std::exception& e) {
-        if(quiet){std::ofstream out(sun::executable().parent_path()/L"setup-error.txt");out<<e.what();}
+        // Never create an elevated error log beside a user-controlled download path.
+        if(quiet)std::cerr<<e.what()<<'\n';
         else MessageBoxW(nullptr,sun::wide(e.what()).c_str(),L"Sun Keyboard Tools Setup",MB_OK|MB_ICONERROR);
         return 1;
     }
